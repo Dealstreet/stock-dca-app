@@ -331,7 +331,8 @@ def show_main_app():
                                 st.success(res)
                                 pdf_data = create_pdf(input_ticker, res, profit_rate, total_invested, final_val)
                                 st.download_button("📄 PDF 다운로드", pdf_data, f"{input_ticker}_report.pdf", "application/pdf")
-                            except: st.error("AI 분석 오류")
+                            except Exception as e:
+                                st.error(f"AI 분석 오류 발생: {e}")
             else:
                 st.error("데이터 로드 실패 (잠시 후 다시 시도해주세요)")
 
