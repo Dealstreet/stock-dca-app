@@ -165,29 +165,38 @@ def create_pdf(ticker, analysis_text, profit_rate, total_invested, final_value):
     pdf.multi_cell(0, 8, txt=analysis_text)
     return pdf.output(dest='S').encode('latin-1')
 
-# --- [추가됨] AI 모델 자동 전환 함수 ---
-def try_generate_content(prompt):
-    """여러 모델을 순차적으로 시도하여 성공하는 모델의 응답을 반환"""
-    # 사용 가능한 모델 후보군 (최신순)
-    models_to_try = [
-        'gemini-1.5-flash', 
-        'gemini-1.5-pro', 
-        'gemini-pro', 
-        'gemini-1.0-pro'
-    ]
-    
-    last_error = None
-    for model_name in models_to_try:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            return response.text # 성공하면 바로 반환
-        except Exception as e:
-            last_error = e
-            continue # 실패하면 다음 모델 시도
+# --- [핵심 수정] 사용 가능한 모델 자동 탐색 함수 ---
+def get_auto_model_name():
+    """API 키로 사용 가능한 모델 목록을 조회하여 첫 번째 Gemini 모델을 반환"""
+    try:
+        # 사용 가능한 모델 목록 조회
+        available_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+        
+        # 'gemini'가 포함된 모델 우선 탐색 (예: models/gemini-1.5-flash)
+        for model in available_models:
+            if 'gemini' in model:
+                return model
+        
+        # gemini가 없으면 목록의 첫 번째 모델 반환
+        if available_models:
+            return available_models[0]
             
-    # 모든 모델이 실패하면 에러 발생
-    raise last_error
+    except Exception as e:
+        st.error(f"모델 목록 조회 실패: {e}")
+        
+    return 'gemini-pro' # 최후의 수단
+
+def try_generate_content(prompt):
+    """자동으로 찾은 모델로 콘텐츠 생성 시도"""
+    model_name = get_auto_model_name()
+    # st.info(f"사용 중인 AI 모델: {model_name}") # 디버깅용 (필요시 주석 해제)
+    
+    model = genai.GenerativeModel(model_name)
+    response = model.generate_content(prompt)
+    return response.text
 
 # ---------------------------------------------------------
 # 4. 화면 구성
@@ -334,14 +343,14 @@ def show_main_app():
                             을 300자 내외로 정중하게 작성해주세요.
                             """
                             try:
-                                # [수정됨] 자동 모델 전환 함수 사용
+                                # [핵심] 자동 모델 탐색 함수 호출
                                 res = try_generate_content(prompt)
                                 st.success("AI 분석 완료!")
                                 st.info(res)
                                 pdf_data = create_pdf(input_ticker, res, profit_rate, total_invested, final_val)
                                 st.download_button("📄 PDF 다운로드", pdf_data, f"{input_ticker}_report.pdf", "application/pdf")
                             except Exception as e:
-                                st.error(f"AI 분석 오류 발생 (모든 모델 실패): {e}")
+                                st.error(f"AI 분석 오류: {e}")
             else:
                 st.error("데이터 로드 실패")
 
