@@ -1,0 +1,9 @@
+streamlit
+yfinance
+pandas
+matplotlib
+google-generativeai
+fpdf
+streamlit-oauth
+gspread
+oauth2client
