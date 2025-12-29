@@ -35,7 +35,7 @@ if GEMINI_API_KEY:
 def init_connection():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = dict(st.secrets["gcp_service_account"])
-    # 줄바꿈 문자 처리 (에러 방지)
+    # 줄바꿈 문자 처리
     if "private_key" in creds_dict:
         creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n").strip()
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
@@ -46,14 +46,12 @@ def get_sheet(sheet_name):
     try:
         return client.open("portfolio_db").worksheet(sheet_name)
     except:
-        # 시트가 없으면 생성 시도
         sh = client.open("portfolio_db")
         ws = sh.add_worksheet(title=sheet_name, rows=100, cols=10)
         return ws
 
-# --- 사용자 설정(프로필) 관련 함수 ---
+# --- 사용자 설정 함수 ---
 def get_user_info(email):
-    """이메일로 사용자 정보 조회"""
     try:
         sheet = get_sheet("user_settings")
         records = sheet.get_all_records()
@@ -70,12 +68,10 @@ def get_user_info(email):
     return {"nickname": "투자자", "name": "", "default_budget": 1000000}
 
 def update_user_info(email, nickname, name, budget):
-    """사용자 정보 저장"""
     try:
         sheet = get_sheet("user_settings")
         records = sheet.get_all_records()
         df = pd.DataFrame(records)
-        
         if not df.empty and email in df['email'].values:
             cell = sheet.find(email)
             sheet.update_cell(cell.row, 2, nickname)
@@ -89,7 +85,7 @@ def update_user_info(email, nickname, name, budget):
         st.error(f"저장 실패: {e}")
         return False
 
-# --- 포트폴리오 DB 관련 함수 ---
+# --- DB 관련 함수 ---
 def add_trade(user_email, ticker, date, price, quantity):
     try:
         sheet = get_sheet("sheet1")
@@ -125,7 +121,6 @@ def get_ticker(query):
     if query.isdigit() and len(query) == 6: return f"{query}.KS"
     return query
 
-# Rate Limit 방지 데이터 로드 함수
 @st.cache_data(ttl=86400)
 def load_data(ticker):
     max_retries = 3
@@ -183,20 +178,13 @@ def show_landing_page():
         </p>
     </div>
     """, unsafe_allow_html=True)
-
     col1, col2, col3 = st.columns(3)
-    with col1:
-        st.info("📊 **과거 데이터 검증**\n\n매일, 매주, 매월 등 다양한 주기로 과거 수익률을 시뮬레이션하고 최적의 전략을 찾으세요.")
-    with col2:
-        st.success("🤖 **AI 투자 비서**\n\nGoogle Gemini가 분석한 전문적인 투자 리포트와 조언을 PDF로 받아보세요.")
-    with col3:
-        st.warning("💼 **실전 포트폴리오**\n\n실제 매매 내역을 구글 시트에 영구 저장하고, 실시간 수익률을 관리하세요.")
-
+    with col1: st.info("📊 **과거 데이터 검증**")
+    with col2: st.success("🤖 **AI 투자 비서**")
+    with col3: st.warning("💼 **실전 포트폴리오**")
     st.divider()
-    
     col_centered = st.columns([1, 2, 1])
     with col_centered[1]:
-        st.markdown("<h3 style='text-align: center;'>지금 바로 시작하기</h3>", unsafe_allow_html=True)
         if CLIENT_ID and CLIENT_SECRET:
             oauth2 = OAuth2Component(CLIENT_ID, CLIENT_SECRET, AUTHORIZE_URL, TOKEN_URL, REVOKE_TOKEN_URL, REVOKE_TOKEN_URL)
             result = oauth2.authorize_button("Google 계정으로 계속하기", REDIRECT_URI, SCOPE, key="google_auth", use_container_width=True)
@@ -213,7 +201,6 @@ def show_main_app():
     user_info = st.session_state["user_info"]
     nickname = user_info.get("nickname", "투자자")
 
-    # --- 사이드바 ---
     with st.sidebar:
         st.title(f"반가워요, {nickname}님! 👋")
         menu = st.radio("메뉴 이동", ["📊 시뮬레이션 & 포트폴리오", "⚙️ 회원 정보 수정"])
@@ -223,42 +210,31 @@ def show_main_app():
             if "user_info" in st.session_state: del st.session_state["user_info"]
             st.rerun()
 
-    # --- 회원 정보 수정 ---
     if menu == "⚙️ 회원 정보 수정":
         st.header("⚙️ 회원 정보 수정")
-        st.write("여기서 설정한 **월 예산**은 시뮬레이션 시 기본값으로 사용됩니다.")
-        
         with st.form("profile_form"):
             new_nick = st.text_input("닉네임", value=user_info.get("nickname", ""), autocomplete="nickname")
             new_name = st.text_input("이름", value=user_info.get("name", ""), autocomplete="name")
-            
             current_budget = user_info.get("default_budget", 1000000)
-            budget_str = st.text_input(
-                "매월 투자 예산 (원 또는 달러)", 
-                value=format_number(current_budget), 
-                autocomplete="transaction-amount"
-            )
+            budget_str = st.text_input("매월 투자 예산 (원 또는 달러)", value=format_number(current_budget), autocomplete="transaction-amount")
             
             if st.form_submit_button("저장하기"):
                 try: clean_budget = int(budget_str.replace(",", ""))
                 except: clean_budget = 0
-                
                 if update_user_info(user_email, new_nick, new_name, clean_budget):
                     st.session_state["user_info"] = {"nickname": new_nick, "name": new_name, "default_budget": clean_budget}
                     st.success("저장되었습니다!")
                     time.sleep(1)
                     st.rerun()
 
-    # --- 메인 기능 ---
     elif menu == "📊 시뮬레이션 & 포트폴리오":
         st.title("💰 AI Stock DCA Master")
-        
-        with st.expander("🛠 **시뮬레이션 설정** (종목 및 예산)", expanded=True):
+        with st.expander("🛠 **시뮬레이션 설정**", expanded=True):
             c1, c2, c3 = st.columns(3)
             with c1: input_ticker = get_ticker(st.text_input("종목명 또는 코드", "삼성전자"))
             with c2:
                 default_b = user_info.get("default_budget", 1000000)
-                budget_input = st.text_input("매월 투자 예산 (원 또는 달러)", value=format_number(default_b))
+                budget_input = st.text_input("매월 투자 예산", value=format_number(default_b))
                 try: monthly_budget = int(budget_input.replace(",", ""))
                 except: monthly_budget = 0
             with c3: interval_type = st.radio("매수 주기", ["매월", "매주", "매일"], horizontal=True)
@@ -277,13 +253,11 @@ def show_main_app():
                 start_d = raw_data.index.min().date()
                 end_d = raw_data.index.max().date()
                 st.info(f"📅 데이터 기간: {start_d} ~ {end_d}")
-                
                 years_avail = (end_d - start_d).days // 365
                 test_period = st.slider("백테스팅 기간 (년)", 1, max(1, years_avail), min(3, max(1, years_avail)))
                 
                 if st.button("🚀 백테스팅 및 AI 분석 시작", type="primary"):
                     df = raw_data.last(f"{test_period}Y").copy()
-                    
                     buy_indices = []
                     if interval_type == "매일": buy_indices = df.index
                     elif interval_type == "매주":
@@ -299,7 +273,7 @@ def show_main_app():
                     if interval_type == "매주": per_trade = monthly_budget * 12 / 52
                     elif interval_type == "매일": per_trade = monthly_budget * 12 / 250
 
-                    st.write(f"💡 월 예산 **{format_number(monthly_budget)}원** 기준 ➡️ 1회 약 **{format_number(per_trade)}원** 투자")
+                    st.write(f"💡 1회 투자금: **{format_number(per_trade)}원**")
 
                     total_invested, total_shares = 0, 0
                     balance_history = []
@@ -320,18 +294,17 @@ def show_main_app():
                     c3.metric("수익률", f"{profit_rate:.2f}%")
                     st.line_chart(balance_history)
                     
-                    # [수정된 부분] AI 분석 호출 (모델명 gemini-pro로 변경, 에러 핸들링 추가)
                     with st.spinner("🤖 AI 분석 중..."):
                         if GEMINI_API_KEY:
-                            # 404 에러 해결을 위해 'gemini-pro' 모델 사용
                             model = genai.GenerativeModel('gemini-pro')
+                            # [수정 완료] final_value -> final_val로 수정
                             prompt = f"""
                             당신은 전문 금융 투자 자문가입니다. 아래 적립식 투자(DCA) 시뮬레이션 결과를 분석해주세요.
                             종목: {input_ticker}
                             기간: {test_period}년
                             수익률: {profit_rate:.2f}%
                             총 투자금: {total_invested:,.0f}
-                            최종 평가액: {final_value:,.0f}
+                            최종 평가액: {final_val:,.0f}
                             
                             1. 수익률 평가
                             2. DCA 전략의 유효성
@@ -347,7 +320,7 @@ def show_main_app():
                             except Exception as e:
                                 st.error(f"AI 분석 오류 발생: {e}")
             else:
-                st.error("데이터 로드 실패 (잠시 후 다시 시도해주세요)")
+                st.error("데이터 로드 실패")
 
         with tab2:
             st.subheader("내 보유 자산 현황")
@@ -372,7 +345,6 @@ def show_main_app():
                 disp.columns = ['종목', '보유수량', '평단가', '현재가', '수익률(%)']
                 st.dataframe(disp.style.format({'평단가': "{:,.0f}", '현재가': "{:,.0f}", '수익률(%)': "{:.2f}%"}))
             else: st.info("아직 투자 기록이 없습니다.")
-
             st.divider()
             st.subheader("📝 매수 기록 추가")
             with st.form("trade_add"):
@@ -380,7 +352,7 @@ def show_main_app():
                 t = c1.text_input("종목 코드", input_ticker)
                 d = c2.date_input("날짜")
                 c3, c4 = st.columns(2)
-                p_str = c3.text_input("매수 단가 (원/달러)", value="0", autocomplete="transaction-amount")
+                p_str = c3.text_input("매수 단가", value="0", autocomplete="transaction-amount")
                 q_str = c4.text_input("수량", value="1")
                 if st.form_submit_button("기록 저장"):
                     try:
@@ -392,9 +364,6 @@ def show_main_app():
                         st.rerun()
                     except: st.error("숫자 형식을 확인해주세요.")
 
-# ---------------------------------------------------------
-# 5. 실행 제어
-# ---------------------------------------------------------
 if "token" not in st.session_state:
     show_landing_page()
 else:
