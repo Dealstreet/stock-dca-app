@@ -35,7 +35,7 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------------
-# 2. 헬퍼 함수
+# 2. 헬퍼 함수 (차트, 계산, PDF 등)
 # ---------------------------------------------------------
 
 # 폰트 설정
@@ -48,48 +48,47 @@ def set_korean_font():
     plt.rcParams['axes.unicode_minus'] = False
     return font_prop
 
-# MDD 계산 함수
+# MDD 계산
 def calculate_mdd(prices):
     roll_max = prices.cummax()
     drawdown = prices / roll_max - 1.0
     mdd = drawdown.min()
     return mdd * 100
 
-# 차트 생성 (수정됨: 26회차 마커, 텍스트 표시)
+# 차트 생성 (26, 52, 78... 회차 마킹)
 def create_chart(df_history, ticker_name, unit_divider=1, unit_label="원"):
     font_prop = set_korean_font()
-    fig, ax = plt.subplots(figsize=(12, 7)) # 차트 크기 약간 키움
+    fig, ax = plt.subplots(figsize=(12, 7))
     
     dates = df_history['date']
-    # 단위 변환 적용
     val_series = df_history['total_value'] / unit_divider
     inv_series = df_history['invested'] / unit_divider
     inf_series = df_history['inflation_principal'] / unit_divider
     
-    # 1. 메인 라인 그리기
+    # 메인 라인
     ax.plot(dates, val_series, label='포트폴리오 가치', color='#FF5733', linewidth=2)
     ax.plot(dates, inv_series, label='총 투자원금', color='#333333', linestyle='--', linewidth=1.5)
     ax.plot(dates, inf_series, label='물가상승원금선 (연2%)', color='#2E86C1', linestyle=':', linewidth=1.5)
     
-    # 2. 26회차마다 마커 및 텍스트 표시
-    # 데이터가 너무 적을 경우를 대비해 최소 간격 조정
+    # 마커 및 텍스트 표시 (26회차, 52회차, 78회차...)
+    # index 25가 26회차입니다.
+    start_idx = 25 
     interval = 26
     
-    for i in range(0, len(dates), interval):
+    for i in range(start_idx, len(dates), interval):
         date_val = dates.iloc[i]
         price_val = val_series.iloc[i]
         
-        # 마커 찍기
+        # 마커
         ax.plot(date_val, price_val, marker='o', color='#C70039', markersize=6)
         
-        # 텍스트 (회차 및 금액)
-        # 겹침 방지를 위해 텍스트 위치 약간 위로 조정
-        label_text = f"{i+1}회\n{price_val:,.0f}{unit_label}"
+        # 텍스트 라벨 (회차 및 금액)
+        label_text = f"{i+1}회차\n{price_val:,.0f}{unit_label}"
         ax.annotate(label_text, 
                     xy=(date_val, price_val), 
-                    xytext=(0, 10), textcoords='offset points',
+                    xytext=(0, 15), textcoords='offset points',
                     ha='center', fontsize=8, fontproperties=font_prop,
-                    bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.7))
+                    bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
 
     ax.set_title(f"[{ticker_name}] DCA 투자 성과 추이", fontproperties=font_prop, fontsize=16)
     ax.set_xlabel("기간 (월)", fontproperties=font_prop)
@@ -109,7 +108,7 @@ def create_chart(df_history, ticker_name, unit_divider=1, unit_label="원"):
     plt.close(fig)
     return buf
 
-# 기타 필수 함수들 (기존 유지)
+# DB 및 기타 유틸리티
 @st.cache_resource
 def init_connection():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -239,14 +238,33 @@ def create_pdf(ticker, ai_txt, prof, xirr_v, inv, val, exc, chart_buf, mdd):
 # 3. 메인 로직
 # ---------------------------------------------------------
 def show_landing_page():
-    st.markdown("<h1 style='text-align: center;'>🚀 AI Stock DCA Master Pro</h1>", unsafe_allow_html=True)
-    if CLIENT_ID and CLIENT_SECRET:
-        oauth2 = OAuth2Component(CLIENT_ID, CLIENT_SECRET, AUTHORIZE_URL, TOKEN_URL, REVOKE_TOKEN_URL, REVOKE_TOKEN_URL)
-        result = oauth2.authorize_button("Google 로그인", REDIRECT_URI, SCOPE, key="google_auth", use_container_width=True)
-        if result:
-            st.session_state["token"] = result.get("token")
-            st.session_state["user_email"] = result.get("id_token", {}).get("email")
-            st.rerun()
+    # 요청하신 대로 랜딩 페이지 문구 원상 복구
+    st.markdown("""
+    <div style='text-align: center; padding: 60px 0;'>
+        <h1 style='color: #1E88E5; font-size: 3.5rem; font-weight: 700;'>🚀 AI Stock DCA Master Pro</h1>
+        <p style='font-size: 1.5rem; color: #555; margin-top: 10px;'>
+            데이터 기반의 적립식 투자 검증부터 <br> 
+            실전 포트폴리오 관리까지 한 번에 시작하세요.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    col1, col2, col3 = st.columns(3)
+    with col1: st.info("📊 **과거 데이터 검증 (XIRR)**")
+    with col2: st.success("🤖 **AI 투자 비서 & PDF**")
+    with col3: st.warning("💼 **실전 포트폴리오 관리**")
+    st.divider()
+    
+    col_centered = st.columns([1, 2, 1])
+    with col_centered[1]:
+        if CLIENT_ID and CLIENT_SECRET:
+            oauth2 = OAuth2Component(CLIENT_ID, CLIENT_SECRET, AUTHORIZE_URL, TOKEN_URL, REVOKE_TOKEN_URL, REVOKE_TOKEN_URL)
+            result = oauth2.authorize_button("Google 계정으로 계속하기", REDIRECT_URI, SCOPE, key="google_auth", use_container_width=True)
+            if result:
+                st.session_state["token"] = result.get("token")
+                st.session_state["user_email"] = result.get("id_token", {}).get("email")
+                st.rerun()
+        else:
+            st.error("Google Client ID/Secret 설정이 필요합니다.")
 
 def show_main_app():
     user_email = st.session_state.get("user_email")
@@ -270,7 +288,7 @@ def show_main_app():
                 except: cb = 0
                 if update_user_info(user_email, nn, nm, cb):
                     st.session_state["user_info"] = {"nickname": nn, "name": nm, "default_budget": cb}
-                    st.success("저장됨"); time.sleep(1); st.rerun()
+                    st.success("저장되었습니다."); time.sleep(1); st.rerun()
 
     elif menu == "📊 시뮬레이션":
         st.title("💰 DCA 시뮬레이터")
@@ -285,7 +303,7 @@ def show_main_app():
                 except: mb = 0
                 intv = c3.selectbox("주기", ["매월", "매주", "매일"])
                 
-                # [복구] 상세 날짜/요일 선택
+                # 상세 날짜/요일 선택
                 target_day, target_date = "금요일", 1
                 c4, c5 = st.columns([1, 2])
                 with c4:
@@ -301,22 +319,18 @@ def show_main_app():
                 uk = get_exchange_rate()
                 st.caption(f"환율: 1$ = {uk:,.2f}원")
 
-            # 시뮬레이션 실행 및 데이터 저장 (Session State 사용)
             if st.button("🚀 시뮬레이션 시작", type="primary"):
                 raw = load_data(it)
                 if raw is not None:
-                    # 데이터 처리
                     is_us = False; sym = "₩"
                     if "Close" in raw.columns:
                         if not (it.endswith(".KS") or it.endswith(".KQ")): is_us = True; sym = "$"
                     
                     df = raw[raw.index >= (raw.index.max() - pd.DateOffset(years=yrs))].copy()
                     
-                    # 주기별 매수일 설정 [복구됨]
                     bi = []
                     if intv == "매일": bi = df.index
                     elif intv == "매월":
-                        # 해당 날짜 혹은 그 이후 가장 가까운 날 찾기
                         grouped = df.groupby([df.index.year, df.index.month])
                         for _, g in grouped:
                             candidates = g[g.index.day >= target_date]
@@ -326,7 +340,6 @@ def show_main_app():
                         d_map = {"월요일":0, "화요일":1, "수요일":2, "목요일":3, "금요일":4}
                         bi = df[df.index.dayofweek == d_map[target_day]].index
 
-                    # 계산 로직
                     pt_krw = mb
                     if intv == "매주": pt_krw = mb * 12 / 52
                     elif intv == "매일": pt_krw = mb * 12 / 250
@@ -363,34 +376,29 @@ def show_main_app():
                     
                     x_dates = [d for d in bi if d <= df.index.max()] + [res_df['date'].iloc[-1]]
                     x_flows = [-pt_krw]*len([d for d in bi if d <= df.index.max()]) + [fin_val]
-                    # xirr 길이 보정
                     if len(x_dates) > len(x_flows): x_dates = x_dates[:len(x_flows)]
                     elif len(x_flows) > len(x_dates): x_flows = x_flows[:len(x_dates)]
                     
                     try: xv = xirr(x_flows, x_dates) * 100
                     except: xv = 0.0
                     
-                    # AI 분석 (여기서 미리 생성해서 저장)
                     ai_txt = "AI 분석 미사용"
                     if ai and GEMINI_API_KEY:
                         prompt = f"""종목:{iq}, 기간:{yrs}년, 원금:{fin_inv:,.0f}, 최종:{fin_val:,.0f}, 수익률:{prof:.2f}%, MDD:{mdd:.2f}%. 분석요약."""
                         try: ai_txt = genai.GenerativeModel("gemini-pro").generate_content(prompt).text
                         except: ai_txt = "AI 호출 실패"
                     
-                    # 결과 Session State에 저장
                     st.session_state['sim_result'] = {
                         'df': res_df, 'iq': iq, 'inv': fin_inv, 'val': fin_val, 'prof': prof, 
                         'exc': exc, 'xv': xv, 'mdd': mdd, 'ai': ai_txt, 'dates': x_dates
                     }
                 else: st.error("데이터 없음")
 
-            # 결과 표시 (Session State 기반)
             if 'sim_result' in st.session_state:
                 res = st.session_state['sim_result']
                 st.divider()
                 st.subheader(f"📊 {res['iq']} 분석 결과")
                 
-                # 단위 선택 (이것이 바뀌어도 if 'sim_result' 블록 안에 있으므로 데이터 유지됨)
                 u_opt = st.radio("단위", ["원", "만원", "백만원", "억원"], horizontal=True)
                 div_map = {"원":1, "만원":10000, "백만원":1000000, "억원":100000000}
                 divider = div_map[u_opt]
@@ -401,16 +409,13 @@ def show_main_app():
                 c3.metric("수익률 / XIRR", f"{res['prof']:.1f}% / {res['xv']:.1f}%")
                 c4.metric("초과수익[최종 평가액 - 물가상승(2%)]", format_currency(res['exc'], u_opt))
                 
-                # MDD 표시
                 st.caption(f"📉 최대 낙폭 (MDD): **{res['mdd']:.2f}%**")
                 
-                # 차트 생성 (단위 적용, 26회차 마커)
                 chart_buf = create_chart(res['df'], res['iq'], divider, u_opt)
                 st.image(chart_buf, use_container_width=True)
                 
                 if res['ai'] != "AI 분석 미사용": st.info(res['ai'])
                 
-                # PDF
                 pdf_d = create_pdf(res['iq'], res['ai'], res['prof'], res['xv'], res['inv'], res['val'], res['exc'], chart_buf, res['mdd'])
                 st.download_button("📄 PDF 다운로드", pdf_d, f"{res['iq']}_report.pdf", "application/pdf")
 
