@@ -36,10 +36,15 @@ if GEMINI_API_KEY:
 # ---------------------------------------------------------
 @st.cache_resource
 def init_connection():
-    """구글 시트 API 연결 초기화 (캐싱 사용)"""
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    # secrets.toml의 [gcp_service_account] 섹션 사용
-    return gspread.authorize(ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope))
+    # 1. Secrets에서 정보를 가져옴 (딕셔너리로 변환)
+    creds_dict = dict(st.secrets["gcp_service_account"])
+    # 2. [핵심 수정] private_key의 줄바꿈 문자(\\n)를 실제 줄바꿈(\n)으로 강제 변환
+    # 이 부분이 없으면 "Invalid base64" 에러가 발생합니다.
+    creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+    # 3. 수정된 정보로 인증 시도
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    return gspread.authorize(creds)
 
 def get_db_sheet():
     """portfolio_db 시트 객체 반환"""
