@@ -2,9 +2,9 @@ streamlit
 yfinance
 pandas
 matplotlib
+scipy
 google-generativeai
 fpdf
 streamlit-oauth
 gspread
 oauth2client
-scipy
