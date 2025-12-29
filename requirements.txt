@@ -7,3 +7,4 @@ fpdf
 streamlit-oauth
 gspread
 oauth2client
+scipy
