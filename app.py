@@ -17,7 +17,7 @@ from io import BytesIO
 import numpy as np
 
 # ---------------------------------------------------------
-# 1. 앱 설정 및 Secrets 로드
+# 1. 앱 설정
 # ---------------------------------------------------------
 st.set_page_config(page_title="AI Stock DCA Master Pro", layout="wide", page_icon="📈")
 
@@ -35,83 +35,7 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------------
-# 2. 구글 시트 DB 연결 및 사용자 관리
-# ---------------------------------------------------------
-@st.cache_resource
-def init_connection():
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    if "private_key" in creds_dict:
-        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n").strip()
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    return gspread.authorize(creds)
-
-def get_sheet(sheet_name):
-    client = init_connection()
-    try:
-        return client.open("portfolio_db").worksheet(sheet_name)
-    except:
-        sh = client.open("portfolio_db")
-        ws = sh.add_worksheet(title=sheet_name, rows=100, cols=10)
-        return ws
-
-def get_user_info(email):
-    try:
-        sheet = get_sheet("user_settings")
-        records = sheet.get_all_records()
-        df = pd.DataFrame(records)
-        if not df.empty and email in df['email'].values:
-            user_data = df[df['email'] == email].iloc[0]
-            return {
-                "nickname": user_data['nickname'],
-                "name": user_data['name'],
-                "default_budget": int(str(user_data['default_budget']).replace(',', ''))
-            }
-    except Exception:
-        pass
-    return {"nickname": "투자자", "name": "", "default_budget": 1000000}
-
-def update_user_info(email, nickname, name, budget):
-    try:
-        sheet = get_sheet("user_settings")
-        records = sheet.get_all_records()
-        df = pd.DataFrame(records)
-        if not df.empty and email in df['email'].values:
-            cell = sheet.find(email)
-            sheet.update_cell(cell.row, 2, nickname)
-            sheet.update_cell(cell.row, 3, name)
-            sheet.update_cell(cell.row, 4, budget)
-        else:
-            if not records: sheet.append_row(["email", "nickname", "name", "default_budget"])
-            sheet.append_row([email, nickname, name, budget])
-        return True
-    except Exception as e:
-        st.error(f"저장 실패: {e}")
-        return False
-
-def add_trade(user_email, ticker, date, price, quantity):
-    try:
-        sheet = get_sheet("sheet1")
-        if not sheet.get_all_values():
-            sheet.append_row(["user_email", "ticker", "date", "price", "quantity"])
-        sheet.append_row([user_email, ticker, str(date), price, int(quantity)])
-    except Exception as e:
-        st.error(f"매수 기록 저장 실패: {e}")
-
-def get_portfolio_df(user_email):
-    try:
-        sheet = get_sheet("sheet1")
-        data = sheet.get_all_records()
-        df = pd.DataFrame(data)
-        if not df.empty:
-            df['price'] = pd.to_numeric(df['price'], errors='coerce')
-            df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce')
-            return df[df['user_email'] == user_email]
-        return pd.DataFrame()
-    except: return pd.DataFrame()
-
-# ---------------------------------------------------------
-# 3. 고급 분석 및 시각화 헬퍼 함수
+# 2. 헬퍼 함수
 # ---------------------------------------------------------
 
 # 폰트 설정
@@ -124,79 +48,53 @@ def set_korean_font():
     plt.rcParams['axes.unicode_minus'] = False
     return font_prop
 
-# 환율 정보
-@st.cache_data(ttl=3600)
-def get_exchange_rate():
-    try:
-        df = yf.download("KRW=X", period="1d", progress=False)
-        if not df.empty:
-            return float(df['Close'].iloc[-1])
-    except: pass
-    return 1400.0
+# MDD 계산 함수
+def calculate_mdd(prices):
+    roll_max = prices.cummax()
+    drawdown = prices / roll_max - 1.0
+    mdd = drawdown.min()
+    return mdd * 100
 
-# 종목 검색
-def get_ticker(query):
-    query = query.strip()
-    mapping = {
-        "삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "현대차": "005380.KS",
-        "애플": "AAPL", "테슬라": "TSLA", "엔비디아": "NVDA", "마이크로소프트": "MSFT",
-        "비트코인": "BTC-USD", "나스닥100": "QQQ", "S&P500": "SPY", "슈드": "SCHD"
-    }
-    if query in mapping: return mapping[query]
-    if query.isdigit() and len(query) == 6: return f"{query}.KS"
-    return query
-
-# 데이터 로드 (배당 포함)
-@st.cache_data(ttl=3600)
-def load_data(ticker):
-    try:
-        ticker_obj = yf.Ticker(ticker)
-        data = ticker_obj.history(period="max")
-        if not data.empty:
-            data.index = data.index.tz_localize(None)
-            return data
-    except Exception as e:
-        st.error(f"데이터 다운로드 실패: {e}")
-    return None
-
-# XIRR 계산
-def xirr(cashflows, dates):
-    if len(cashflows) != len(dates): return None
-    def npv(rate):
-        if rate <= -1.0: return float('inf')
-        d0 = dates[0]
-        return sum([cf / ((1 + rate) ** ((d - d0).days / 365.0)) for cf, d in zip(cashflows, dates)])
-    try:
-        return optimize.newton(npv, 0.1)
-    except: return None
-
-# 화폐 단위 포맷팅
-def format_currency(value, unit="원"):
-    if unit == "만원": return f"{value/10000:,.0f}만원"
-    elif unit == "백만원": return f"{value/1000000:,.2f}백만원"
-    elif unit == "억원": return f"{value/100000000:,.4f}억원"
-    else: return f"{value:,.0f}원"
-
-def format_number(num):
-    if num: return "{:,}".format(int(num))
-    return "0"
-
-# Matplotlib 차트 생성
-def create_chart(df_history, ticker_name):
+# 차트 생성 (수정됨: 26회차 마커, 텍스트 표시)
+def create_chart(df_history, ticker_name, unit_divider=1, unit_label="원"):
     font_prop = set_korean_font()
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(12, 7)) # 차트 크기 약간 키움
+    
     dates = df_history['date']
+    # 단위 변환 적용
+    val_series = df_history['total_value'] / unit_divider
+    inv_series = df_history['invested'] / unit_divider
+    inf_series = df_history['inflation_principal'] / unit_divider
     
-    # 3가지 선 그리기
-    ax.plot(dates, df_history['total_value'], label='포트폴리오 가치', color='#FF5733', linewidth=2, marker='o', markevery=10, markersize=5)
-    ax.plot(dates, df_history['invested'], label='총 투자원금', color='#333333', linestyle='--', linewidth=1.5)
-    ax.plot(dates, df_history['inflation_principal'], label='물가상승원금선 (연2%)', color='#2E86C1', linestyle=':', linewidth=1.5)
+    # 1. 메인 라인 그리기
+    ax.plot(dates, val_series, label='포트폴리오 가치', color='#FF5733', linewidth=2)
+    ax.plot(dates, inv_series, label='총 투자원금', color='#333333', linestyle='--', linewidth=1.5)
+    ax.plot(dates, inf_series, label='물가상승원금선 (연2%)', color='#2E86C1', linestyle=':', linewidth=1.5)
     
+    # 2. 26회차마다 마커 및 텍스트 표시
+    # 데이터가 너무 적을 경우를 대비해 최소 간격 조정
+    interval = 26
+    
+    for i in range(0, len(dates), interval):
+        date_val = dates.iloc[i]
+        price_val = val_series.iloc[i]
+        
+        # 마커 찍기
+        ax.plot(date_val, price_val, marker='o', color='#C70039', markersize=6)
+        
+        # 텍스트 (회차 및 금액)
+        # 겹침 방지를 위해 텍스트 위치 약간 위로 조정
+        label_text = f"{i+1}회\n{price_val:,.0f}{unit_label}"
+        ax.annotate(label_text, 
+                    xy=(date_val, price_val), 
+                    xytext=(0, 10), textcoords='offset points',
+                    ha='center', fontsize=8, fontproperties=font_prop,
+                    bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.7))
+
     ax.set_title(f"[{ticker_name}] DCA 투자 성과 추이", fontproperties=font_prop, fontsize=16)
     ax.set_xlabel("기간 (월)", fontproperties=font_prop)
-    ax.set_ylabel("평가 금액", fontproperties=font_prop)
+    ax.set_ylabel(f"평가 금액 ({unit_label})", fontproperties=font_prop)
     
-    # X축 설정
     ax.xaxis.set_major_locator(mdates.MonthLocator(interval=max(1, len(dates)//10)))
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
     plt.xticks(rotation=45)
@@ -211,295 +109,340 @@ def create_chart(df_history, ticker_name):
     plt.close(fig)
     return buf
 
-# PDF 생성
-def create_pdf(ticker, analysis_text, profit_rate, xirr_val, total_invested, final_value, excess_return, chart_buf):
-    font_urls = {
-        "NanumGothic-Regular.ttf": "https://github.com/Dealstreet/stock-dca-app/raw/refs/heads/main/NanumGothic-Regular.ttf",
-        "NanumGothic-Bold.ttf": "https://github.com/Dealstreet/stock-dca-app/raw/refs/heads/main/NanumGothic-Bold.ttf"
-    }
-    for filename, url in font_urls.items():
-        if not os.path.exists(filename):
-            try: urllib.request.urlretrieve(url, filename)
-            except: pass
+# 기타 필수 함수들 (기존 유지)
+@st.cache_resource
+def init_connection():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds_dict = dict(st.secrets["gcp_service_account"])
+    if "private_key" in creds_dict:
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n").strip()
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    return gspread.authorize(creds)
 
+def get_sheet(sheet_name):
+    client = init_connection()
+    try: return client.open("portfolio_db").worksheet(sheet_name)
+    except: return client.open("portfolio_db").add_worksheet(title=sheet_name, rows=100, cols=10)
+
+def get_user_info(email):
+    try:
+        sheet = get_sheet("user_settings")
+        df = pd.DataFrame(sheet.get_all_records())
+        if not df.empty and email in df['email'].values:
+            u = df[df['email'] == email].iloc[0]
+            return {"nickname": u['nickname'], "name": u['name'], "default_budget": int(str(u['default_budget']).replace(',', ''))}
+    except: pass
+    return {"nickname": "투자자", "name": "", "default_budget": 1000000}
+
+def update_user_info(email, nick, name, bud):
+    try:
+        sheet = get_sheet("user_settings")
+        df = pd.DataFrame(sheet.get_all_records())
+        if not df.empty and email in df['email'].values:
+            r = sheet.find(email).row
+            sheet.update_cell(r, 2, nick); sheet.update_cell(r, 3, name); sheet.update_cell(r, 4, bud)
+        else:
+            if not sheet.get_all_values(): sheet.append_row(["email", "nickname", "name", "default_budget"])
+            sheet.append_row([email, nick, name, bud])
+        return True
+    except: return False
+
+def add_trade(email, t, d, p, q):
+    try:
+        s = get_sheet("sheet1")
+        if not s.get_all_values(): s.append_row(["user_email", "ticker", "date", "price", "quantity"])
+        s.append_row([email, t, str(d), p, int(q)])
+    except: pass
+
+def get_portfolio_df(email):
+    try:
+        s = get_sheet("sheet1")
+        df = pd.DataFrame(s.get_all_records())
+        if not df.empty:
+            df['price'] = pd.to_numeric(df['price'], errors='coerce')
+            df['quantity'] = pd.to_numeric(df['quantity'], errors='coerce')
+            return df[df['user_email'] == email]
+    except: pass
+    return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def get_exchange_rate():
+    try:
+        df = yf.download("KRW=X", period="1d", progress=False)
+        return float(df['Close'].iloc[-1])
+    except: return 1400.0
+
+def get_ticker(q):
+    q = q.strip()
+    m = {"삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "현대차": "005380.KS", "애플": "AAPL", "테슬라": "TSLA", "엔비디아": "NVDA", "마이크로소프트": "MSFT", "비트코인": "BTC-USD", "나스닥100": "QQQ", "S&P500": "SPY", "슈드": "SCHD"}
+    return m.get(q, f"{q}.KS" if q.isdigit() and len(q)==6 else q)
+
+@st.cache_data(ttl=3600)
+def load_data(t):
+    try:
+        d = yf.Ticker(t).history(period="max")
+        if not d.empty: d.index = d.index.tz_localize(None); return d
+    except: pass
+    return None
+
+def xirr(cf, d):
+    if len(cf) != len(d): return None
+    def npv(r):
+        if r <= -1.0: return float('inf')
+        d0 = d[0]; return sum([c / ((1 + r) ** ((dt - d0).days / 365.0)) for c, dt in zip(cf, d)])
+    try: return optimize.newton(npv, 0.1)
+    except: return None
+
+def format_currency(v, u="원"):
+    if u == "만원": return f"{v/10000:,.0f}만원"
+    elif u == "백만원": return f"{v/1000000:,.2f}백만원"
+    elif u == "억원": return f"{v/100000000:,.4f}억원"
+    return f"{v:,.0f}원"
+
+def format_number(n): return "{:,}".format(int(n)) if n else "0"
+
+def create_pdf(ticker, ai_txt, prof, xirr_v, inv, val, exc, chart_buf, mdd):
+    font_urls = {"NanumGothic-Regular.ttf": "https://github.com/Dealstreet/stock-dca-app/raw/refs/heads/main/NanumGothic-Regular.ttf", "NanumGothic-Bold.ttf": "https://github.com/Dealstreet/stock-dca-app/raw/refs/heads/main/NanumGothic-Bold.ttf"}
+    for f, u in font_urls.items():
+        if not os.path.exists(f): 
+            try: urllib.request.urlretrieve(u, f)
+            except: pass
+            
     pdf = FPDF()
     pdf.add_page()
+    hk = os.path.exists("NanumGothic-Regular.ttf")
+    pdf.add_font('Nanum', '', 'NanumGothic-Regular.ttf', uni=True) if hk else None
+    pdf.add_font('Nanum', 'B', 'NanumGothic-Bold.ttf', uni=True) if hk else None
+    pdf.set_font('Nanum' if hk else 'Arial', 'B', 20)
     
-    has_korean = os.path.exists("NanumGothic-Regular.ttf")
-    if has_korean:
-        pdf.add_font('Nanum', '', 'NanumGothic-Regular.ttf', uni=True)
-        pdf.add_font('Nanum', 'B', 'NanumGothic-Bold.ttf', uni=True)
-        pdf.set_font('Nanum', 'B', 20)
-    else: pdf.set_font('Arial', 'B', 20)
-        
     pdf.cell(0, 15, txt=f"[{ticker}] Investment Report", ln=True, align='C')
     pdf.ln(5)
     
-    if has_korean: pdf.set_font('Nanum', '', 12)
-    else: pdf.set_font('Arial', '', 12)
-    
+    pdf.set_font('Nanum' if hk else 'Arial', '', 12)
     pdf.set_fill_color(240, 240, 240)
-    pdf.cell(0, 10, txt=f" Total Invested: {total_invested:,.0f} KRW", ln=True, fill=True)
-    pdf.cell(0, 10, txt=f" Final Value: {final_value:,.0f} KRW", ln=True, fill=True)
-    pdf.cell(0, 10, txt=f" Return: {profit_rate:.2f}% | XIRR: {xirr_val:.2f}%", ln=True, fill=True)
-    pdf.cell(0, 10, txt=f" Excess Return (vs 2% Inf): {excess_return:,.0f} KRW", ln=True, fill=True)
+    pdf.cell(0, 10, txt=f" Total Invested: {inv:,.0f} KRW", ln=True, fill=True)
+    pdf.cell(0, 10, txt=f" Final Value: {val:,.0f} KRW", ln=True, fill=True)
+    pdf.cell(0, 10, txt=f" Return: {prof:.2f}% | XIRR: {xirr_v:.2f}% | MDD: {mdd:.2f}%", ln=True, fill=True)
+    pdf.cell(0, 10, txt=f" Excess Return: {exc:,.0f} KRW", ln=True, fill=True)
     pdf.ln(10)
     
     if chart_buf:
         import tempfile
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
-            tmpfile.write(chart_buf.getvalue())
-            tmp_path = tmpfile.name
-        pdf.image(tmp_path, x=10, w=190)
-        os.unlink(tmp_path)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            tmp.write(chart_buf.getvalue()); tmp_path = tmp.name
+        pdf.image(tmp_path, x=10, w=190); os.unlink(tmp_path)
     pdf.ln(10)
-    
-    pdf.multi_cell(0, 8, txt=analysis_text)
+    pdf.multi_cell(0, 8, txt=ai_txt)
     return pdf.output(dest='S').encode('latin-1')
 
 # ---------------------------------------------------------
-# 4. 화면 구성 (Landing & Main)
+# 3. 메인 로직
 # ---------------------------------------------------------
 def show_landing_page():
-    st.markdown("""
-    <div style='text-align: center; padding: 60px 0;'>
-        <h1 style='color: #1E88E5; font-size: 3.5rem; font-weight: 700;'>🚀 AI Stock DCA Master Pro</h1>
-        <p style='font-size: 1.5rem; color: #555; margin-top: 10px;'>
-            데이터 기반의 적립식 투자 검증부터 <br> 
-            실전 포트폴리오 관리까지 한 번에 시작하세요.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-    col1, col2, col3 = st.columns(3)
-    with col1: st.info("📊 **과거 데이터 검증 (XIRR)**")
-    with col2: st.success("🤖 **AI 투자 비서 & PDF**")
-    with col3: st.warning("💼 **실전 포트폴리오 관리**")
-    st.divider()
-    col_centered = st.columns([1, 2, 1])
-    with col_centered[1]:
-        if CLIENT_ID and CLIENT_SECRET:
-            oauth2 = OAuth2Component(CLIENT_ID, CLIENT_SECRET, AUTHORIZE_URL, TOKEN_URL, REVOKE_TOKEN_URL, REVOKE_TOKEN_URL)
-            result = oauth2.authorize_button("Google 계정으로 계속하기", REDIRECT_URI, SCOPE, key="google_auth", use_container_width=True)
-            if result:
-                st.session_state["token"] = result.get("token")
-                st.session_state["user_email"] = result.get("id_token", {}).get("email")
-                st.rerun()
-        else:
-            st.error("Google Client ID/Secret 설정이 필요합니다.")
+    st.markdown("<h1 style='text-align: center;'>🚀 AI Stock DCA Master Pro</h1>", unsafe_allow_html=True)
+    if CLIENT_ID and CLIENT_SECRET:
+        oauth2 = OAuth2Component(CLIENT_ID, CLIENT_SECRET, AUTHORIZE_URL, TOKEN_URL, REVOKE_TOKEN_URL, REVOKE_TOKEN_URL)
+        result = oauth2.authorize_button("Google 로그인", REDIRECT_URI, SCOPE, key="google_auth", use_container_width=True)
+        if result:
+            st.session_state["token"] = result.get("token")
+            st.session_state["user_email"] = result.get("id_token", {}).get("email")
+            st.rerun()
 
 def show_main_app():
     user_email = st.session_state.get("user_email")
-    if "user_info" not in st.session_state:
-        st.session_state["user_info"] = get_user_info(user_email)
-    
+    if "user_info" not in st.session_state: st.session_state["user_info"] = get_user_info(user_email)
     user_info = st.session_state["user_info"]
-    nickname = user_info.get("nickname", "투자자")
-
+    
     with st.sidebar:
-        st.title(f"반가워요, {nickname}님! 👋")
-        menu = st.radio("메뉴 이동", ["📊 시뮬레이션 & 포트폴리오", "⚙️ 회원 정보 수정"])
-        st.divider()
+        st.title(f"{user_info.get('nickname')}님 환영합니다")
+        menu = st.radio("메뉴", ["📊 시뮬레이션", "⚙️ 정보 수정"])
         if st.button("로그아웃"):
-            del st.session_state["token"]
-            if "user_info" in st.session_state: del st.session_state["user_info"]
-            st.rerun()
+            del st.session_state["token"]; del st.session_state["user_info"]; st.rerun()
 
-    if menu == "⚙️ 회원 정보 수정":
-        st.header("⚙️ 회원 정보 수정")
-        with st.form("profile_form"):
-            new_nick = st.text_input("닉네임", value=user_info.get("nickname", ""), autocomplete="nickname")
-            new_name = st.text_input("이름", value=user_info.get("name", ""), autocomplete="name")
-            current_budget = user_info.get("default_budget", 1000000)
-            budget_str = st.text_input("매월 투자 예산", value=format_number(current_budget), autocomplete="transaction-amount")
-            
-            if st.form_submit_button("저장하기"):
-                try: clean_budget = int(budget_str.replace(",", ""))
-                except: clean_budget = 0
-                if update_user_info(user_email, new_nick, new_name, clean_budget):
-                    st.session_state["user_info"] = {"nickname": new_nick, "name": new_name, "default_budget": clean_budget}
-                    st.success("저장되었습니다!")
-                    time.sleep(1)
-                    st.rerun()
+    if menu == "⚙️ 정보 수정":
+        st.header("정보 수정")
+        with st.form("pf"):
+            nn = st.text_input("닉네임", user_info.get("nickname"))
+            nm = st.text_input("이름", user_info.get("name"))
+            b = st.text_input("예산", format_number(user_info.get("default_budget")))
+            if st.form_submit_button("저장"):
+                try: cb = int(b.replace(",",""))
+                except: cb = 0
+                if update_user_info(user_email, nn, nm, cb):
+                    st.session_state["user_info"] = {"nickname": nn, "name": nm, "default_budget": cb}
+                    st.success("저장됨"); time.sleep(1); st.rerun()
 
-    elif menu == "📊 시뮬레이션 & 포트폴리오":
-        st.title("💰 AI Stock DCA Master Pro")
+    elif menu == "📊 시뮬레이션":
+        st.title("💰 DCA 시뮬레이터")
+        tab1, tab2 = st.tabs(["시뮬레이션", "내 포트폴리오"])
         
-        tab1, tab2 = st.tabs(["📈 DCA 백테스팅", "💼 내 포트폴리오"])
-
         with tab1:
-            with st.expander("🛠 **시뮬레이션 고급 설정**", expanded=True):
+            with st.expander("설정", expanded=True):
                 c1, c2, c3 = st.columns(3)
-                with c1: 
-                    input_query = st.text_input("종목명 또는 코드", "삼성전자")
-                    input_ticker = get_ticker(input_query)
-                with c2:
-                    default_b = user_info.get("default_budget", 1000000)
-                    budget_str = st.text_input("매월 투자 예산", value=format_number(default_b))
-                    try: monthly_budget = int(budget_str.replace(",", "").replace("원", ""))
-                    except: monthly_budget = 0
-                with c3:
-                    interval_type = st.selectbox("매수 주기", ["매월", "매주", "매일"])
-
-                c4, c5, c6 = st.columns(3)
-                with c4: years = st.slider("기간 (년)", 1, 10, 3)
-                with c5: use_dividend = st.checkbox("배당금 재투자 (TR 효과)", value=True)
-                with c6: ai_use = st.checkbox("AI 투자 분석 리포트 생성", value=False)
+                iq = c1.text_input("종목", "삼성전자"); it = get_ticker(iq)
+                bs = c2.text_input("예산", format_number(user_info.get("default_budget")))
+                try: mb = int(bs.replace(",",""))
+                except: mb = 0
+                intv = c3.selectbox("주기", ["매월", "매주", "매일"])
                 
-                usd_krw = get_exchange_rate()
-                st.caption(f"ℹ️ 환율 적용: 1 USD = {usd_krw:,.2f} KRW (해외 주식 시)")
+                # [복구] 상세 날짜/요일 선택
+                target_day, target_date = "금요일", 1
+                c4, c5 = st.columns([1, 2])
+                with c4:
+                    if intv == "매주":
+                        target_day = st.selectbox("요일 선택", ["월요일", "화요일", "수요일", "목요일", "금요일"], index=4)
+                    elif intv == "매월":
+                        target_date = st.selectbox("매수 날짜", [1, 15, 30], index=0)
 
+                c6, c7, c8 = st.columns(3)
+                yrs = c6.slider("기간(년)", 1, 10, 3)
+                div = c7.checkbox("배당재투자", True)
+                ai = c8.checkbox("AI 분석", False)
+                uk = get_exchange_rate()
+                st.caption(f"환율: 1$ = {uk:,.2f}원")
+
+            # 시뮬레이션 실행 및 데이터 저장 (Session State 사용)
             if st.button("🚀 시뮬레이션 시작", type="primary"):
-                raw_data = load_data(input_ticker)
-                if raw_data is not None and not raw_data.empty:
-                    # 데이터 처리 시작
-                    currency_symbol = "₩"
-                    is_us_stock = False
-                    if "Close" in raw_data.columns:
-                        if not (input_ticker.endswith(".KS") or input_ticker.endswith(".KQ")):
-                            is_us_stock = True; currency_symbol = "$"
+                raw = load_data(it)
+                if raw is not None:
+                    # 데이터 처리
+                    is_us = False; sym = "₩"
+                    if "Close" in raw.columns:
+                        if not (it.endswith(".KS") or it.endswith(".KQ")): is_us = True; sym = "$"
                     
-                    end_date = raw_data.index.max()
-                    start_date = end_date - pd.DateOffset(years=years)
-                    df = raw_data[raw_data.index >= start_date].copy()
+                    df = raw[raw.index >= (raw.index.max() - pd.DateOffset(years=yrs))].copy()
                     
-                    per_trade_krw = monthly_budget
-                    if interval_type == "매주": per_trade_krw = monthly_budget * 12 / 52
-                    elif interval_type == "매일": per_trade_krw = monthly_budget * 12 / 250
-                    
-                    per_trade_amt = per_trade_krw / usd_krw if is_us_stock else per_trade_krw
-                    
-                    total_shares = 0
-                    total_invested_currency = 0
-                    inflation_principal = 0
-                    
-                    history = []
-                    cashflows = [] # XIRR용
-                    
-                    buy_indices = []
-                    if interval_type == "매일": buy_indices = df.index
-                    elif interval_type == "매월": buy_indices = df.groupby([df.index.year, df.index.month]).apply(lambda x: x.index[0]).tolist()
-                    elif interval_type == "매주": buy_indices = df[df.index.dayofweek == 4].index
+                    # 주기별 매수일 설정 [복구됨]
+                    bi = []
+                    if intv == "매일": bi = df.index
+                    elif intv == "매월":
+                        # 해당 날짜 혹은 그 이후 가장 가까운 날 찾기
+                        grouped = df.groupby([df.index.year, df.index.month])
+                        for _, g in grouped:
+                            candidates = g[g.index.day >= target_date]
+                            if not candidates.empty: bi.append(candidates.index[0])
+                            else: bi.append(g.index[-1])
+                    elif intv == "매주":
+                        d_map = {"월요일":0, "화요일":1, "수요일":2, "목요일":3, "금요일":4}
+                        bi = df[df.index.dayofweek == d_map[target_day]].index
 
-                    prev_date = df.index[0]
+                    # 계산 로직
+                    pt_krw = mb
+                    if intv == "매주": pt_krw = mb * 12 / 52
+                    elif intv == "매일": pt_krw = mb * 12 / 250
                     
-                    for date, row in df.iterrows():
-                        price = row['Close']
-                        days_diff = (date - prev_date).days
-                        if inflation_principal > 0: inflation_principal *= (1.02) ** (days_diff / 365)
-                        prev_date = date
-
-                        if use_dividend and row.get('Dividends', 0) > 0:
-                            total_shares += (row['Dividends'] * total_shares) / price
+                    pt_amt = pt_krw / uk if is_us else pt_krw
+                    shares = 0; inv_curr = 0; inf_p = 0
+                    hist = []; xirr_fs = []; prev = df.index[0]
+                    
+                    for d, r in df.iterrows():
+                        p = r['Close']
+                        days = (d - prev).days
+                        if inf_p > 0: inf_p *= (1.02) ** (days/365)
+                        prev = d
                         
-                        if date in buy_indices:
-                            total_shares += per_trade_amt / price
-                            total_invested_currency += per_trade_amt
-                            inflation_principal += per_trade_amt * (usd_krw if is_us_stock else 1)
-                            invest_krw = per_trade_amt * (usd_krw if is_us_stock else 1)
-                            cashflows.append(-invest_krw)
+                        if div and r.get('Dividends', 0) > 0: shares += (r['Dividends']*shares)/p
                         
-                        rate = usd_krw if is_us_stock else 1
-                        history.append({
-                            "date": date,
-                            "invested": total_invested_currency * rate,
-                            "total_value": total_shares * price * rate,
-                            "inflation_principal": inflation_principal
-                        })
+                        if d in bi:
+                            shares += pt_amt/p
+                            inv_curr += pt_amt
+                            inf_p += pt_amt * (uk if is_us else 1)
+                            xirr_fs.append(-pt_krw)
+                        
+                        rate = uk if is_us else 1
+                        hist.append({"date": d, "invested": inv_curr*rate, "total_value": shares*p*rate, "inflation_principal": inf_p})
                     
-                    df_res = pd.DataFrame(history)
-                    final_invested_krw = df_res['invested'].iloc[-1]
-                    final_value_krw = df_res['total_value'].iloc[-1]
-                    final_inf_krw = df_res['inflation_principal'].iloc[-1]
+                    res_df = pd.DataFrame(hist)
+                    fin_inv = res_df['invested'].iloc[-1]
+                    fin_val = res_df['total_value'].iloc[-1]
+                    fin_inf = res_df['inflation_principal'].iloc[-1]
                     
-                    profit_rate = (final_value_krw - final_invested_krw) / final_invested_krw * 100
-                    excess_return = final_value_krw - final_inf_krw
+                    prof = (fin_val - fin_inv) / fin_inv * 100
+                    exc = fin_val - fin_inf
+                    mdd = calculate_mdd(res_df['total_value'])
                     
-                    # XIRR
-                    xirr_dates = [d for d in buy_indices if d <= end_date] + [df_res['date'].iloc[-1]]
-                    xirr_flows = [-per_trade_krw] * len([d for d in buy_indices if d <= end_date]) + [final_value_krw]
-                    try: xirr_val = xirr(xirr_flows, xirr_dates) * 100
-                    except: xirr_val = 0.0
+                    x_dates = [d for d in bi if d <= df.index.max()] + [res_df['date'].iloc[-1]]
+                    x_flows = [-pt_krw]*len([d for d in bi if d <= df.index.max()]) + [fin_val]
+                    # xirr 길이 보정
+                    if len(x_dates) > len(x_flows): x_dates = x_dates[:len(x_flows)]
+                    elif len(x_flows) > len(x_dates): x_flows = x_flows[:len(x_dates)]
+                    
+                    try: xv = xirr(x_flows, x_dates) * 100
+                    except: xv = 0.0
+                    
+                    # AI 분석 (여기서 미리 생성해서 저장)
+                    ai_txt = "AI 분석 미사용"
+                    if ai and GEMINI_API_KEY:
+                        prompt = f"""종목:{iq}, 기간:{yrs}년, 원금:{fin_inv:,.0f}, 최종:{fin_val:,.0f}, 수익률:{prof:.2f}%, MDD:{mdd:.2f}%. 분석요약."""
+                        try: ai_txt = genai.GenerativeModel("gemini-pro").generate_content(prompt).text
+                        except: ai_txt = "AI 호출 실패"
+                    
+                    # 결과 Session State에 저장
+                    st.session_state['sim_result'] = {
+                        'df': res_df, 'iq': iq, 'inv': fin_inv, 'val': fin_val, 'prof': prof, 
+                        'exc': exc, 'xv': xv, 'mdd': mdd, 'ai': ai_txt, 'dates': x_dates
+                    }
+                else: st.error("데이터 없음")
 
-                    st.divider()
-                    st.subheader(f"📊 {input_ticker} ({input_query}) 분석 결과")
-                    unit_opt = st.radio("금액 단위 선택", ["원", "만원", "백만원", "억원"], horizontal=True)
-                    
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("총 투자원금", format_currency(final_invested_krw, unit_opt))
-                    c2.metric("최종 평가액", format_currency(final_value_krw, unit_opt))
-                    c3.metric("수익률 / XIRR", f"{profit_rate:.1f}% / {xirr_val:.1f}%")
-                    c4.metric("초과 수익 (vs 물가2%)", format_currency(excess_return, unit_opt), delta_color="normal" if excess_return > 0 else "inverse")
-                    
-                    chart_buf = create_chart(df_res, input_query)
-                    st.image(chart_buf, use_container_width=True)
-                    
-                    ai_text = "AI 분석 미사용"
-                    if ai_use and GEMINI_API_KEY:
-                        with st.spinner("🤖 AI 분석 중..."):
-                            prompt = f"""
-                            당신은 펀드매니저입니다. {input_query} 투자 분석:
-                            기간: {years}년, 투자금: {monthly_budget}원/월
-                            결과: 원금 {final_invested_krw:,.0f}원 -> {final_value_krw:,.0f}원
-                            수익률: {profit_rate:.2f}% (XIRR: {xirr_val:.2f}%)
-                            초과수익: {excess_return:,.0f}원
-                            DCA 전략 평가와 조언을 300자 내외로 작성.
-                            """
-                            try: ai_text = genai.GenerativeModel("gemini-pro").generate_content(prompt).text
-                            except: ai_text = "AI 호출 실패"
-                            st.info(ai_text)
-                    
-                    pdf_data = create_pdf(input_query, ai_text, profit_rate, xirr_val, final_invested_krw, final_value_krw, excess_return, chart_buf)
-                    st.download_button("📄 PDF 리포트 다운로드", pdf_data, f"{input_query}_report.pdf", "application/pdf")
-                else: st.error("데이터 로드 실패")
+            # 결과 표시 (Session State 기반)
+            if 'sim_result' in st.session_state:
+                res = st.session_state['sim_result']
+                st.divider()
+                st.subheader(f"📊 {res['iq']} 분석 결과")
+                
+                # 단위 선택 (이것이 바뀌어도 if 'sim_result' 블록 안에 있으므로 데이터 유지됨)
+                u_opt = st.radio("단위", ["원", "만원", "백만원", "억원"], horizontal=True)
+                div_map = {"원":1, "만원":10000, "백만원":1000000, "억원":100000000}
+                divider = div_map[u_opt]
+                
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("총 투자원금", format_currency(res['inv'], u_opt))
+                c2.metric("최종 평가액", format_currency(res['val'], u_opt))
+                c3.metric("수익률 / XIRR", f"{res['prof']:.1f}% / {res['xv']:.1f}%")
+                c4.metric("초과수익[최종 평가액 - 물가상승(2%)]", format_currency(res['exc'], u_opt))
+                
+                # MDD 표시
+                st.caption(f"📉 최대 낙폭 (MDD): **{res['mdd']:.2f}%**")
+                
+                # 차트 생성 (단위 적용, 26회차 마커)
+                chart_buf = create_chart(res['df'], res['iq'], divider, u_opt)
+                st.image(chart_buf, use_container_width=True)
+                
+                if res['ai'] != "AI 분석 미사용": st.info(res['ai'])
+                
+                # PDF
+                pdf_d = create_pdf(res['iq'], res['ai'], res['prof'], res['xv'], res['inv'], res['val'], res['exc'], chart_buf, res['mdd'])
+                st.download_button("📄 PDF 다운로드", pdf_d, f"{res['iq']}_report.pdf", "application/pdf")
 
         with tab2:
-            st.subheader("내 보유 자산 현황")
-            df_port = get_portfolio_df(user_email)
-            if not df_port.empty:
-                summ = df_port.groupby('ticker').agg(qty=('quantity','sum'), inv=('price', lambda x: (x * df_port.loc[x.index, 'quantity']).sum())).reset_index()
-                
-                # 현재가 조회 최적화
-                tickers = summ['ticker'].tolist()
+            st.subheader("내 보유 자산")
+            df_p = get_portfolio_df(user_email)
+            if not df_p.empty:
+                s = df_p.groupby('ticker').agg(q=('quantity','sum'), i=('price', lambda x: (x*df_p.loc[x.index, 'quantity']).sum())).reset_index()
+                ts = s['ticker'].tolist()
                 try:
-                    cur_data = yf.download(tickers, period='1d', group_by='ticker', progress=False)
-                    prices = {}
-                    if len(tickers) == 1:
-                        if isinstance(cur_data.columns, pd.MultiIndex): prices[tickers[0]] = float(cur_data.iloc[-1][(tickers[0], 'Close')])
-                        else: prices[tickers[0]] = float(cur_data.iloc[-1]['Close'])
-                    else:
-                        for t in tickers:
-                            try: prices[t] = float(cur_data.iloc[-1][(t, 'Close')])
-                            except: prices[t] = 0
-                    summ['cur'] = summ['ticker'].map(prices)
-                except: summ['cur'] = 0
-                
-                summ['val'] = summ['cur'] * summ['qty']
-                summ['rate'] = (summ['val'] - summ['inv']) / summ['inv'] * 100
-                
-                disp = summ[['ticker', 'qty', 'inv', 'cur', 'rate']].copy()
-                disp.columns = ['종목', '보유수량', '총매수금액', '현재평가액', '수익률(%)']
-                st.dataframe(disp.style.format({'총매수금액': "{:,.0f}", '현재평가액': "{:,.0f}", '수익률(%)': "{:.2f}%"}))
-            else: st.info("투자 기록이 없습니다.")
+                    cd = yf.download(ts, period='1d', group_by='ticker', progress=False)
+                    cur_p = {}
+                    for t in ts:
+                        try: 
+                            if len(ts) > 1: cur_p[t] = float(cd.iloc[-1][(t, 'Close')])
+                            else: cur_p[t] = float(cd.iloc[-1]['Close'])
+                        except: cur_p[t] = 0
+                    s['c'] = s['ticker'].map(cur_p)
+                except: s['c'] = 0
+                s['v'] = s['c']*s['q']; s['r'] = (s['v']-s['i'])/s['i']*100
+                d_df = s.rename(columns={'ticker':'종목','q':'수량','i':'매수금','c':'현재가','v':'평가액','r':'수익률'})
+                st.dataframe(d_df.style.format({'매수금':"{:,.0f}",'현재가':"{:,.0f}",'평가액':"{:,.0f}",'수익률':"{:.2f}%"}))
             
-            st.divider()
-            st.subheader("📝 매수 기록 추가")
-            with st.form("trade_add"):
-                c1, c2 = st.columns(2)
-                t = c1.text_input("종목 코드")
-                d = c2.date_input("날짜")
-                c3, c4 = st.columns(2)
-                p = c3.text_input("매수 단가 (원/달러)", "0")
-                q = c4.text_input("수량", "1")
-                if st.form_submit_button("저장"):
-                    try: add_trade(user_email, t, d, float(p.replace(",","")), int(q.replace(",","")))
-                    except: st.error("입력 오류")
-                    st.rerun()
+            with st.form("add"):
+                c1,c2 = st.columns(2)
+                t = c1.text_input("종목코드"); d = c2.date_input("날짜")
+                c3,c4 = st.columns(2)
+                p = c3.text_input("단가"); q = c4.text_input("수량")
+                if st.form_submit_button("추가"):
+                    try: add_trade(user_email, t, d, float(p.replace(",","")), int(q.replace(",",""))); st.rerun()
+                    except: pass
 
-# ---------------------------------------------------------
-# 5. 실행
-# ---------------------------------------------------------
 if __name__ == "__main__":
-    if "token" not in st.session_state:
-        show_landing_page()
-    else:
-        show_main_app()
+    if "token" not in st.session_state: show_landing_page()
+    else: show_main_app()
