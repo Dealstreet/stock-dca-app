@@ -229,7 +229,6 @@ def show_main_app():
         st.write("여기서 설정한 **월 예산**은 시뮬레이션 시 기본값으로 사용됩니다.")
         
         with st.form("profile_form"):
-            # Autocomplete 적용 및 들여쓰기 오류 해결
             new_nick = st.text_input("닉네임", value=user_info.get("nickname", ""), autocomplete="nickname")
             new_name = st.text_input("이름", value=user_info.get("name", ""), autocomplete="name")
             
@@ -259,7 +258,6 @@ def show_main_app():
             with c1: input_ticker = get_ticker(st.text_input("종목명 또는 코드", "삼성전자"))
             with c2:
                 default_b = user_info.get("default_budget", 1000000)
-                # 시뮬레이션 설정값 입력창에는 autocomplete 불필요 (단순 계산용)
                 budget_input = st.text_input("매월 투자 예산 (원 또는 달러)", value=format_number(default_b))
                 try: monthly_budget = int(budget_input.replace(",", ""))
                 except: monthly_budget = 0
@@ -322,13 +320,28 @@ def show_main_app():
                     c3.metric("수익률", f"{profit_rate:.2f}%")
                     st.line_chart(balance_history)
                     
+                    # [수정된 부분] AI 분석 호출 (모델명 gemini-pro로 변경, 에러 핸들링 추가)
                     with st.spinner("🤖 AI 분석 중..."):
                         if GEMINI_API_KEY:
-                            model = genai.GenerativeModel('gemini-1.5-flash')
-                            prompt = f"종목:{input_ticker},기간:{test_period}년,수익률:{profit_rate:.2f}%. 분석해줘."
+                            # 404 에러 해결을 위해 'gemini-pro' 모델 사용
+                            model = genai.GenerativeModel('gemini-pro')
+                            prompt = f"""
+                            당신은 전문 금융 투자 자문가입니다. 아래 적립식 투자(DCA) 시뮬레이션 결과를 분석해주세요.
+                            종목: {input_ticker}
+                            기간: {test_period}년
+                            수익률: {profit_rate:.2f}%
+                            총 투자금: {total_invested:,.0f}
+                            최종 평가액: {final_value:,.0f}
+                            
+                            1. 수익률 평가
+                            2. DCA 전략의 유효성
+                            3. 향후 조언
+                            을 300자 내외로 정중하게 작성해주세요.
+                            """
                             try:
                                 res = model.generate_content(prompt).text
-                                st.success(res)
+                                st.success("AI 분석 완료!")
+                                st.info(res)
                                 pdf_data = create_pdf(input_ticker, res, profit_rate, total_invested, final_val)
                                 st.download_button("📄 PDF 다운로드", pdf_data, f"{input_ticker}_report.pdf", "application/pdf")
                             except Exception as e:
