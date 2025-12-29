@@ -9,6 +9,7 @@ from streamlit_oauth import OAuth2Component
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import time
+import urllib.request  # [추가됨] 폰트 다운로드용 라이브러리
 
 # ---------------------------------------------------------
 # 1. 앱 페이지 설정 및 Secrets 로드
@@ -144,56 +145,90 @@ def format_number(num):
     if num: return "{:,}".format(int(num))
     return "0"
 
+# [수정됨] 폰트 자동 다운로드 및 PDF 생성 함수
 def create_pdf(ticker, analysis_text, profit_rate, total_invested, final_value):
+    # 1. GitHub에서 폰트 다운로드 (없을 경우에만)
+    font_urls = {
+        "NanumGothic-Regular.ttf": "https://github.com/Dealstreet/stock-dca-app/raw/refs/heads/main/NanumGothic-Regular.ttf",
+        "NanumGothic-Bold.ttf": "https://github.com/Dealstreet/stock-dca-app/raw/refs/heads/main/NanumGothic-Bold.ttf"
+    }
+    
+    for filename, url in font_urls.items():
+        if not os.path.exists(filename):
+            try:
+                urllib.request.urlretrieve(url, filename)
+            except Exception as e:
+                print(f"Font download failed: {e}")
+
     pdf = FPDF()
     pdf.add_page()
-    font_path = "NanumGothic.ttf" 
-    if os.path.exists(font_path):
-        pdf.add_font('Nanum', '', font_path, uni=True)
+    
+    has_korean_font = False
+    
+    # 2. 폰트 등록 (Regular & Bold)
+    if os.path.exists("NanumGothic-Regular.ttf"):
+        try:
+            # 기본 폰트 등록
+            pdf.add_font('Nanum', '', 'NanumGothic-Regular.ttf', uni=True)
+            
+            # 굵은 폰트가 있으면 등록 ('B' 스타일)
+            if os.path.exists("NanumGothic-Bold.ttf"):
+                pdf.add_font('Nanum', 'B', 'NanumGothic-Bold.ttf', uni=True)
+            
+            # 기본 폰트 설정
+            pdf.set_font('Nanum', '', 12)
+            has_korean_font = True
+        except:
+            pdf.set_font("Arial", size=12)
+    else:
+        pdf.set_font("Arial", size=12)
+    
+    # 3. PDF 내용 작성
+    
+    # 제목 (Bold 적용 시도)
+    if has_korean_font and os.path.exists("NanumGothic-Bold.ttf"):
+        pdf.set_font('Nanum', 'B', 16)
+    else:
+        pdf.set_font_size(16)
+        
+    pdf.cell(0, 10, txt=f"[{ticker}] DCA Report", ln=True, align='C')
+    pdf.ln(10)
+    
+    # 본문 (Regular)
+    if has_korean_font:
         pdf.set_font('Nanum', '', 12)
     else:
         pdf.set_font("Arial", size=12)
-        pdf.cell(0, 10, txt="Error: Korean font not found.", ln=True)
-    
-    pdf.set_font_size(16)
-    pdf.cell(0, 10, txt=f"[{ticker}] DCA Report", ln=True, align='C')
-    pdf.ln(10)
-    pdf.set_font_size(12)
+        
     pdf.cell(0, 10, txt=f"Invested: {total_invested:,.0f}", ln=True)
     pdf.cell(0, 10, txt=f"Final: {final_value:,.0f} ({profit_rate:.2f}%)", ln=True)
     pdf.ln(10)
-    pdf.multi_cell(0, 8, txt=analysis_text)
+    
+    # AI 분석 내용
+    if has_korean_font:
+        pdf.multi_cell(0, 8, txt=analysis_text)
+    else:
+        pdf.set_text_color(255, 0, 0)
+        pdf.multi_cell(0, 8, txt="[Error] Korean font download failed. Cannot display analysis text.")
+        pdf.set_text_color(0, 0, 0)
+        
     return pdf.output(dest='S').encode('latin-1')
 
-# --- [핵심 수정] 사용 가능한 모델 자동 탐색 함수 ---
+# --- AI 모델 자동 탐색 ---
 def get_auto_model_name():
-    """API 키로 사용 가능한 모델 목록을 조회하여 첫 번째 Gemini 모델을 반환"""
     try:
-        # 사용 가능한 모델 목록 조회
         available_models = []
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 available_models.append(m.name)
-        
-        # 'gemini'가 포함된 모델 우선 탐색 (예: models/gemini-1.5-flash)
         for model in available_models:
-            if 'gemini' in model:
-                return model
-        
-        # gemini가 없으면 목록의 첫 번째 모델 반환
-        if available_models:
-            return available_models[0]
-            
-    except Exception as e:
-        st.error(f"모델 목록 조회 실패: {e}")
-        
-    return 'gemini-pro' # 최후의 수단
+            if 'gemini' in model: return model
+        if available_models: return available_models[0]
+    except Exception: pass
+    return 'gemini-pro'
 
 def try_generate_content(prompt):
-    """자동으로 찾은 모델로 콘텐츠 생성 시도"""
     model_name = get_auto_model_name()
-    # st.info(f"사용 중인 AI 모델: {model_name}") # 디버깅용 (필요시 주석 해제)
-    
     model = genai.GenerativeModel(model_name)
     response = model.generate_content(prompt)
     return response.text
@@ -339,11 +374,11 @@ def show_main_app():
                             
                             1. 수익률 평가
                             2. DCA 전략의 유효성
-                            3. 향후 조언
-                            을 300자 내외로 정중하게 작성해주세요.
+                            3. MDD 평가
+                            4. 향후 조언
+                            을 500자 내외로 정중하고 전문가의 태도로 작성해주세요.
                             """
                             try:
-                                # [핵심] 자동 모델 탐색 함수 호출
                                 res = try_generate_content(prompt)
                                 st.success("AI 분석 완료!")
                                 st.info(res)
