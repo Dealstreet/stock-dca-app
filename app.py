@@ -125,10 +125,9 @@ def get_ticker(query):
     if query.isdigit() and len(query) == 6: return f"{query}.KS"
     return query
 
-# --- [수정된 부분] Rate Limit 방지 데이터 로드 함수 ---
-@st.cache_data(ttl=86400) # 24시간 캐싱
+# Rate Limit 방지 데이터 로드 함수
+@st.cache_data(ttl=86400)
 def load_data(ticker):
-    """재시도 로직이 포함된 데이터 로드 함수"""
     max_retries = 3
     delay = 1
     for attempt in range(max_retries):
@@ -175,7 +174,6 @@ def create_pdf(ticker, analysis_text, profit_rate, total_invested, final_value):
 # 4. 화면 구성
 # ---------------------------------------------------------
 def show_landing_page():
-    # [복구됨] 풍성한 랜딩 페이지 소개 글
     st.markdown("""
     <div style='text-align: center; padding: 60px 0;'>
         <h1 style='color: #1E88E5; font-size: 3.5rem; font-weight: 700;'>🚀 AI Stock DCA Master</h1>
@@ -229,22 +227,18 @@ def show_main_app():
     if menu == "⚙️ 회원 정보 수정":
         st.header("⚙️ 회원 정보 수정")
         st.write("여기서 설정한 **월 예산**은 시뮬레이션 시 기본값으로 사용됩니다.")
+        
         with st.form("profile_form"):
-            new_nick = st.text_input(
-    "닉네임", 
-    value=user_info.get("nickname", ""),
-    autocomplete="nickname" # 'nickname' 속성 지정
-)
-            new_name = st.text_input(
-    "이름", 
-    value=user_info.get("name", ""),
-    autocomplete="name", # 'name' 속성 지정
-    placeholder="홍길동"
-)
+            # Autocomplete 적용 및 들여쓰기 오류 해결
+            new_nick = st.text_input("닉네임", value=user_info.get("nickname", ""), autocomplete="nickname")
+            new_name = st.text_input("이름", value=user_info.get("name", ""), autocomplete="name")
+            
             current_budget = user_info.get("default_budget", 1000000)
-           budget_str = st.text_input("매월 투자 예산 (원 또는 달러)", value=format_number(current_budget),
-    autocomplete="transaction-amount", # 유효한 자동완성 값 제공
-    help="브라우저 자동완성을 돕기 위해 예산 금액 성격을 지정했습니다.")
+            budget_str = st.text_input(
+                "매월 투자 예산 (원 또는 달러)", 
+                value=format_number(current_budget), 
+                autocomplete="transaction-amount"
+            )
             
             if st.form_submit_button("저장하기"):
                 try: clean_budget = int(budget_str.replace(",", ""))
@@ -265,6 +259,7 @@ def show_main_app():
             with c1: input_ticker = get_ticker(st.text_input("종목명 또는 코드", "삼성전자"))
             with c2:
                 default_b = user_info.get("default_budget", 1000000)
+                # 시뮬레이션 설정값 입력창에는 autocomplete 불필요 (단순 계산용)
                 budget_input = st.text_input("매월 투자 예산 (원 또는 달러)", value=format_number(default_b))
                 try: monthly_budget = int(budget_input.replace(",", ""))
                 except: monthly_budget = 0
@@ -279,14 +274,12 @@ def show_main_app():
         tab1, tab2 = st.tabs(["📈 DCA 백테스팅", "💼 내 포트폴리오"])
 
         with tab1:
-            # [수정됨] 강화된 load_data 함수 사용
             raw_data = load_data(input_ticker)
             if raw_data is not None and not raw_data.empty:
                 start_d = raw_data.index.min().date()
                 end_d = raw_data.index.max().date()
                 st.info(f"📅 데이터 기간: {start_d} ~ {end_d}")
                 
-                # [복구됨] 백테스팅 기간 입력 (슬라이더)
                 years_avail = (end_d - start_d).days // 365
                 test_period = st.slider("백테스팅 기간 (년)", 1, max(1, years_avail), min(3, max(1, years_avail)))
                 
@@ -373,7 +366,7 @@ def show_main_app():
                 t = c1.text_input("종목 코드", input_ticker)
                 d = c2.date_input("날짜")
                 c3, c4 = st.columns(2)
-                p_str = c3.text_input("매수 단가 (원/달러)", value="0")
+                p_str = c3.text_input("매수 단가 (원/달러)", value="0", autocomplete="transaction-amount")
                 q_str = c4.text_input("수량", value="1")
                 if st.form_submit_button("기록 저장"):
                     try:
