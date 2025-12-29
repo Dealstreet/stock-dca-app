@@ -230,10 +230,21 @@ def show_main_app():
         st.header("⚙️ 회원 정보 수정")
         st.write("여기서 설정한 **월 예산**은 시뮬레이션 시 기본값으로 사용됩니다.")
         with st.form("profile_form"):
-            new_nick = st.text_input("닉네임", value=user_info.get("nickname", ""))
-            new_name = st.text_input("이름", value=user_info.get("name", ""))
+            new_nick = st.text_input(
+    "닉네임", 
+    value=user_info.get("nickname", ""),
+    autocomplete="nickname" # 'nickname' 속성 지정
+)
+            new_name = st.text_input(
+    "이름", 
+    value=user_info.get("name", ""),
+    autocomplete="name", # 'name' 속성 지정
+    placeholder="홍길동"
+)
             current_budget = user_info.get("default_budget", 1000000)
-            budget_str = st.text_input("매월 투자 예산 (원 또는 달러)", value=format_number(current_budget))
+           budget_str = st.text_input("매월 투자 예산 (원 또는 달러)", value=format_number(current_budget),
+    autocomplete="transaction-amount", # 유효한 자동완성 값 제공
+    help="브라우저 자동완성을 돕기 위해 예산 금액 성격을 지정했습니다.")
             
             if st.form_submit_button("저장하기"):
                 try: clean_budget = int(budget_str.replace(",", ""))
