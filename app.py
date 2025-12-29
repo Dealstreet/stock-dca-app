@@ -9,7 +9,7 @@ from streamlit_oauth import OAuth2Component
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import time
-import urllib.request  # [추가됨] 폰트 다운로드용 라이브러리
+import urllib.request
 
 # ---------------------------------------------------------
 # 1. 앱 페이지 설정 및 Secrets 로드
@@ -36,7 +36,6 @@ if GEMINI_API_KEY:
 def init_connection():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = dict(st.secrets["gcp_service_account"])
-    # 줄바꿈 문자 처리
     if "private_key" in creds_dict:
         creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n").strip()
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
@@ -145,76 +144,51 @@ def format_number(num):
     if num: return "{:,}".format(int(num))
     return "0"
 
-# [수정됨] 폰트 자동 다운로드 및 PDF 생성 함수
+# PDF 생성 함수
 def create_pdf(ticker, analysis_text, profit_rate, total_invested, final_value):
-    # 1. GitHub에서 폰트 다운로드 (없을 경우에만)
     font_urls = {
         "NanumGothic-Regular.ttf": "https://github.com/Dealstreet/stock-dca-app/raw/refs/heads/main/NanumGothic-Regular.ttf",
         "NanumGothic-Bold.ttf": "https://github.com/Dealstreet/stock-dca-app/raw/refs/heads/main/NanumGothic-Bold.ttf"
     }
-    
     for filename, url in font_urls.items():
         if not os.path.exists(filename):
-            try:
-                urllib.request.urlretrieve(url, filename)
-            except Exception as e:
-                print(f"Font download failed: {e}")
+            try: urllib.request.urlretrieve(url, filename)
+            except Exception as e: print(f"Font download failed: {e}")
 
     pdf = FPDF()
     pdf.add_page()
     
     has_korean_font = False
-    
-    # 2. 폰트 등록 (Regular & Bold)
     if os.path.exists("NanumGothic-Regular.ttf"):
         try:
-            # 기본 폰트 등록
             pdf.add_font('Nanum', '', 'NanumGothic-Regular.ttf', uni=True)
-            
-            # 굵은 폰트가 있으면 등록 ('B' 스타일)
             if os.path.exists("NanumGothic-Bold.ttf"):
                 pdf.add_font('Nanum', 'B', 'NanumGothic-Bold.ttf', uni=True)
-            
-            # 기본 폰트 설정
             pdf.set_font('Nanum', '', 12)
             has_korean_font = True
-        except:
-            pdf.set_font("Arial", size=12)
-    else:
-        pdf.set_font("Arial", size=12)
+        except: pdf.set_font("Arial", size=12)
+    else: pdf.set_font("Arial", size=12)
     
-    # 3. PDF 내용 작성
-    
-    # 제목 (Bold 적용 시도)
-    if has_korean_font and os.path.exists("NanumGothic-Bold.ttf"):
-        pdf.set_font('Nanum', 'B', 16)
-    else:
-        pdf.set_font_size(16)
-        
+    if has_korean_font and os.path.exists("NanumGothic-Bold.ttf"): pdf.set_font('Nanum', 'B', 16)
+    else: pdf.set_font_size(16)
     pdf.cell(0, 10, txt=f"[{ticker}] DCA Report", ln=True, align='C')
     pdf.ln(10)
     
-    # 본문 (Regular)
-    if has_korean_font:
-        pdf.set_font('Nanum', '', 12)
-    else:
-        pdf.set_font("Arial", size=12)
-        
+    if has_korean_font: pdf.set_font('Nanum', '', 12)
+    else: pdf.set_font("Arial", size=12)
     pdf.cell(0, 10, txt=f"Invested: {total_invested:,.0f}", ln=True)
     pdf.cell(0, 10, txt=f"Final: {final_value:,.0f} ({profit_rate:.2f}%)", ln=True)
     pdf.ln(10)
     
-    # AI 분석 내용
-    if has_korean_font:
-        pdf.multi_cell(0, 8, txt=analysis_text)
+    if has_korean_font: pdf.multi_cell(0, 8, txt=analysis_text)
     else:
         pdf.set_text_color(255, 0, 0)
-        pdf.multi_cell(0, 8, txt="[Error] Korean font download failed. Cannot display analysis text.")
+        pdf.multi_cell(0, 8, txt="[Warning] Korean font not found.")
         pdf.set_text_color(0, 0, 0)
         
     return pdf.output(dest='S').encode('latin-1')
 
-# --- AI 모델 자동 탐색 ---
+# AI 모델 탐색 및 생성
 def get_auto_model_name():
     try:
         available_models = []
@@ -324,7 +298,10 @@ def show_main_app():
                 years_avail = (end_d - start_d).days // 365
                 test_period = st.slider("백테스팅 기간 (년)", 1, max(1, years_avail), min(3, max(1, years_avail)))
                 
-                if st.button("🚀 백테스팅 및 AI 분석 시작", type="primary"):
+                # [추가됨] AI 분석 사용 여부 선택 버튼 (기본값: 사용 안 함)
+                ai_use_option = st.radio("🤖 AI 분석 기능", ["사용 안 함", "사용 하기"], index=0, horizontal=True)
+                
+                if st.button("🚀 시뮬레이션 시작", type="primary"):
                     df = raw_data.last(f"{test_period}Y").copy()
                     buy_indices = []
                     if interval_type == "매일": buy_indices = df.index
@@ -362,30 +339,40 @@ def show_main_app():
                     c3.metric("수익률", f"{profit_rate:.2f}%")
                     st.line_chart(balance_history)
                     
-                    with st.spinner("🤖 AI 분석 중..."):
-                        if GEMINI_API_KEY:
-                            prompt = f"""
-                            당신은 전문 금융 투자 자문가입니다. 아래 적립식 투자(DCA) 시뮬레이션 결과를 분석해주세요.
-                            종목: {input_ticker}
-                            기간: {test_period}년
-                            수익률: {profit_rate:.2f}%
-                            총 투자금: {total_invested:,.0f}
-                            최종 평가액: {final_val:,.0f}
-                            
-                            1. 수익률 평가
-                            2. DCA 전략의 유효성
-                            3. MDD 평가
-                            4. 향후 조언
-                            을 500자 내외로 정중하고 전문가의 태도로 작성해주세요.
-                            """
-                            try:
-                                res = try_generate_content(prompt)
-                                st.success("AI 분석 완료!")
-                                st.info(res)
-                                pdf_data = create_pdf(input_ticker, res, profit_rate, total_invested, final_val)
-                                st.download_button("📄 PDF 다운로드", pdf_data, f"{input_ticker}_report.pdf", "application/pdf")
-                            except Exception as e:
-                                st.error(f"AI 분석 오류: {e}")
+                    # [수정됨] 사용자가 '사용 하기'를 선택했을 때만 AI 분석 실행
+                    res_text = "AI 분석 기능을 사용하지 않았습니다."
+                    
+                    if ai_use_option == "사용 하기":
+                        with st.spinner("🤖 AI 분석 및 리포트 작성 중... (최대 1분 소요)"):
+                            if GEMINI_API_KEY:
+                                prompt = f"""
+                                당신은 전문 금융 투자 자문가입니다. 아래 적립식 투자(DCA) 시뮬레이션 결과를 분석해주세요.
+                                종목: {input_ticker}
+                                기간: {test_period}년
+                                수익률: {profit_rate:.2f}%
+                                총 투자금: {total_invested:,.0f}
+                                최종 평가액: {final_val:,.0f}
+                                
+                                1. 수익률 평가
+                                2. DCA 전략의 유효성
+                                3. 향후 조언
+                                을 300자 내외로 정중하게 작성해주세요.
+                                """
+                                try:
+                                    res_text = try_generate_content(prompt)
+                                    st.success("AI 분석 완료!")
+                                    st.info(res_text)
+                                except Exception as e:
+                                    st.error(f"AI 분석 오류: {e}")
+                                    res_text = f"AI 분석 중 오류가 발생했습니다: {e}"
+                            else:
+                                st.warning("Gemini API 키가 설정되지 않아 AI 분석을 건너뜁니다.")
+                    else:
+                        st.info("ℹ️ AI 분석 기능을 사용하지 않아 결과를 빠르게 표시했습니다.")
+
+                    # PDF 생성 (분석 결과가 없으면 기본 문구만 들어감)
+                    pdf_data = create_pdf(input_ticker, res_text, profit_rate, total_invested, final_val)
+                    st.download_button("📄 결과 리포트 다운로드 (PDF)", pdf_data, f"{input_ticker}_report.pdf", "application/pdf")
             else:
                 st.error("데이터 로드 실패")
 
